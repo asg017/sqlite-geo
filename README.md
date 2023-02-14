@@ -1,0 +1,3 @@
+# sqlite-geo
+
+A work-in-progress SQLite extension for geospatial data. The goal is to be a ~90% replacement of [spatialite](https://www.gaia-gis.it/fossil/libspatialite/index), but we'll see how far it goes...
