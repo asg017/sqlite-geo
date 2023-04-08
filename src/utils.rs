@@ -1,8 +1,8 @@
-use geo::Geometry;
-use geo_postgis::{FromPostgis, ToPostgis};
+use geo::{BoundingRect, Geometry};
+use geozero::wkb::GpkgWkb;
+use geozero::{CoordDimensions, ToGeo, ToWkb};
 
 use geojson::GeoJson;
-use postgis::ewkb::{self, AsEwkbGeometry, EwkbRead, EwkbWrite};
 
 use sqlite_loadable::prelude::*;
 use sqlite_loadable::{api, Error, Result};
@@ -11,11 +11,18 @@ use std::os::raw::c_void;
 use wkt::TryFromWkt;
 
 pub fn result_geo(context: *mut sqlite3_context, geometry: Geometry) {
-    let mut buff = std::io::Cursor::new(vec![]);
-    let x = geometry.to_postgis_with_srid(None);
-    //let p = postgis::ewkb::Geometry::from(geometry);
-    x.as_ewkb().write_ewkb(&mut buff).unwrap();
-    api::result_blob(context, buff.into_inner().as_slice());
+    let srid = None;
+    let bbox = geometry.bounding_rect().unwrap();
+    let min = bbox.min();
+    let max = bbox.max();
+    let wkb = geometry
+        .to_gpkg_wkb(
+            CoordDimensions::default(),
+            srid,
+            vec![min.x, min.y, max.x, max.y],
+        )
+        .unwrap();
+    api::result_blob(context, wkb.as_slice());
 }
 
 pub fn value_as_geometry(value: &*mut sqlite3_value) -> Result<geo_types::Geometry> {
@@ -33,17 +40,9 @@ pub fn value_as_geometry(value: &*mut sqlite3_value) -> Result<geo_types::Geomet
         }
         api::ValueType::Blob => {
             let b = api::value_blob(value);
-            let mut x = std::io::Cursor::new(b);
-            let x = ewkb::Geometry::read_ewkb(&mut x).unwrap();
-            match x {
-                ewkb::GeometryT::Point(v) => Ok(geo_types::Point::from_postgis(&v).into()),
-                ewkb::GeometryT::LineString(_) => todo!(),
-                ewkb::GeometryT::Polygon(_) => todo!(),
-                ewkb::GeometryT::MultiPoint(_) => todo!(),
-                ewkb::GeometryT::MultiLineString(_) => todo!(),
-                ewkb::GeometryT::MultiPolygon(_) => todo!(),
-                ewkb::GeometryT::GeometryCollection(_) => todo!(),
-            }
+            let wkb = GpkgWkb(b.to_vec());
+            let geom = wkb.to_geo().unwrap();
+            Ok(geom)
         }
         _ => Err(Error::new_message("asdf")),
     }
@@ -71,7 +70,7 @@ pub fn geo_from_value_or_cache(
         ))
     } else {
         // Step 3: if a string is passed in, then try to make
-        // a regex from that, and return a flag to call sqlite3_set_auxdata
+        // a geom from that, and return a flag to call sqlite3_set_auxdata
         match value_as_geometry(value) {
             Ok(geo) => Ok((Box::new(geo), GeoInputType::TextInitial(at))),
             Err(err) => Err(err),
@@ -85,10 +84,10 @@ unsafe extern "C" fn cleanup(p: *mut c_void) {
 
 pub fn cleanup_geo_value_cached(
     context: *mut sqlite3_context,
-    regex: Box<geo_types::Geometry>,
+    geom: Box<geo_types::Geometry>,
     input_type: GeoInputType,
 ) {
-    let pointer = Box::into_raw(regex);
+    let pointer = Box::into_raw(geom);
     match input_type {
         GeoInputType::GetAuxdata => {}
         GeoInputType::TextInitial(at) => {
